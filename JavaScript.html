@@ -69,8 +69,8 @@ function onMembersLoaded(members) {
   populateAssigneeDropdown('form-assignee');
   populateAssigneeDropdown('filter-assignee', true);
 
-  // Employees cannot change assignee – hide that field
-  if (currentUser.role === 'Employee') {
+  // Trainees cannot change assignee – hide that field
+  if (currentUser.role === 'Trainee') {
     document.getElementById('assignee-field').classList.add('hidden');
   }
 
@@ -188,7 +188,7 @@ function buildTaskCard(task, subTasks) {
           </svg>
         </button>
         <!-- Delete (Lead / Main Lead only) -->
-        ${currentUser && currentUser.role !== 'Employee'
+        ${currentUser && currentUser.role !== 'Trainee'
           ? `<button onclick="confirmDeleteTask('${escHtml(task.taskId)}')"
                class="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-red-500 transition"
                title="Delete task">

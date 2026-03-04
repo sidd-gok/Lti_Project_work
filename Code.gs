@@ -10,7 +10,7 @@
  *
  *    Sheet: "Users"
  *      A1: Email  |  B1: Role  |  C1: Team_ID
- *      Role values: "Main Lead", "Lead", "Employee"
+ *      Role values: "Main Lead", "Lead", "Trainee"
  *
  *    Sheet: "Tasks"
  *      A1: Task_ID  |  B1: Title  |  C1: Description  |  D1: Assignee_Email
@@ -160,8 +160,8 @@ function getUserInfo() {
 
 /**
  * Fetches tasks according to the current user's role:
- *   - Employee  → only their own assigned tasks
- *   - Lead      → all tasks assigned to members of their team
+ *   - Trainee   → only their own assigned tasks
+ *   - Lead      → all tasks from every project/team where they are the Lead
  *   - Main Lead → all tasks in the system
  *
  * @returns {Object[]} Array of task objects.
@@ -177,15 +177,19 @@ function getTasks() {
   }
 
   if (userInfo.role === 'Lead') {
-    // Find all employees in this lead's team
+    // Find every project/team where this user is assigned as Lead
     const users = sheetToObjects(getSheet('Users'));
+    const teams = sheetToObjects(getSheet('Teams'));
+    const ledTeamIds = teams
+      .filter(t => t['Lead_Email'] === userInfo.email)
+      .map(t => String(t['Team_ID']));
     const teamEmails = users
-      .filter(u => String(u['Team_ID']) === userInfo.teamId)
+      .filter(u => ledTeamIds.includes(String(u['Team_ID'])))
       .map(u => u['Email']);
     return tasks.filter(t => teamEmails.includes(t['Assignee_Email']));
   }
 
-  // Employee: only own tasks
+  // Trainee: only own tasks
   return tasks.filter(t => t['Assignee_Email'] === userInfo.email);
 }
 
@@ -198,8 +202,8 @@ function createTask(taskData) {
   const userInfo = getCurrentUserInfo();
   if (!userInfo) return { success: false, error: 'Not authenticated' };
 
-  // Employees can only create tasks for themselves
-  const assignee = (userInfo.role === 'Employee')
+  // Trainees can only create tasks for themselves
+  const assignee = (userInfo.role === 'Trainee')
     ? userInfo.email
     : (taskData.assigneeEmail || userInfo.email);
 
@@ -222,7 +226,7 @@ function createTask(taskData) {
 
 /**
  * Updates a task's status (drag-and-drop persistence).
- * Employees can only update their own tasks; Leads can update team tasks.
+ * Trainees can only update their own tasks; Leads can update team tasks.
  * @param {string} taskId
  * @param {string} newStatus - 'To-Do' | 'In-Progress' | 'Done'
  * @returns {{ success: boolean }}
@@ -246,7 +250,7 @@ function updateTaskStatus(taskId, newStatus) {
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][taskIdCol]) === String(taskId)) {
       // RBAC check
-      if (userInfo.role === 'Employee' && data[i][assigneeCol] !== userInfo.email) {
+      if (userInfo.role === 'Trainee' && data[i][assigneeCol] !== userInfo.email) {
         return { success: false, error: 'Permission denied' };
       }
       sheet.getRange(i + 1, statusCol + 1).setValue(newStatus);
@@ -277,8 +281,8 @@ function updateTask(taskData) {
 
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][taskIdCol]) === String(taskData.taskId)) {
-      // Employees cannot reassign tasks
-      const newAssignee = (userInfo.role === 'Employee')
+      // Trainees cannot reassign tasks
+      const newAssignee = (userInfo.role === 'Trainee')
         ? data[i][assignCol]
         : (taskData.assigneeEmail || data[i][assignCol]);
 
@@ -302,7 +306,7 @@ function updateTask(taskData) {
 function deleteTask(taskId) {
   const userInfo = getCurrentUserInfo();
   if (!userInfo) return { success: false, error: 'Not authenticated' };
-  if (userInfo.role === 'Employee') return { success: false, error: 'Permission denied' };
+  if (userInfo.role === 'Trainee') return { success: false, error: 'Permission denied' };
 
   const sheet = getSheet('Tasks');
   const data = sheet.getDataRange().getValues();
@@ -322,7 +326,7 @@ function deleteTask(taskId) {
 
 /**
  * Returns the list of team members (email + role) visible to the current user.
- * Main Lead sees all users; Lead sees their team; Employee sees only themselves.
+ * Main Lead sees all users; Lead sees all their project members; Trainee sees only themselves.
  * @returns {Object[]}
  */
 function getTeamMembers() {
@@ -334,7 +338,12 @@ function getTeamMembers() {
   if (userInfo.role === 'Main Lead') return users;
 
   if (userInfo.role === 'Lead') {
-    return users.filter(u => String(u['Team_ID']) === userInfo.teamId);
+    // Return members from every project/team where this user is the Lead
+    const teams = sheetToObjects(getSheet('Teams'));
+    const ledTeamIds = teams
+      .filter(t => t['Lead_Email'] === userInfo.email)
+      .map(t => String(t['Team_ID']));
+    return users.filter(u => ledTeamIds.includes(String(u['Team_ID'])));
   }
 
   return users.filter(u => u['Email'] === userInfo.email);
