@@ -15,11 +15,12 @@
  */
 
 // ─── GLOBAL STATE ─────────────────────────────────────────────────────────────
-let currentUser   = null;   // { email, role, teamId }
-let allTasks      = [];     // raw task objects from the backend
-let allMembers    = [];     // team members for assignee dropdowns
-let aiSuggestions = [];     // last Gemini AI sub-task suggestions
-let reportChart   = null;   // Chart.js instance (keep ref to destroy on re-open)
+let currentUser    = null;   // { email, role, teamId }
+let allTasks       = [];     // raw task objects from the backend
+let allMembers     = [];     // team members for assignee dropdowns
+let aiSuggestions  = [];     // last Gemini AI sub-task suggestions
+let reportChart    = null;   // Chart.js instance (keep ref to destroy on re-open)
+let _sortableInited = false; // guard: initSortable() must only run once
 
 // ─── INITIALISATION ───────────────────────────────────────────────────────────
 
@@ -136,10 +137,10 @@ function renderBoard(tasks) {
     }
   });
 
-  // Update counters
-  document.getElementById('count-todo').textContent       = tasks.filter(t => t.status === 'To-Do').length;
-  document.getElementById('count-inprogress').textContent = tasks.filter(t => t.status === 'In-Progress').length;
-  document.getElementById('count-done').textContent       = tasks.filter(t => t.status === 'Done').length;
+  // Update counters – count only top-level tasks to match visible card count
+  document.getElementById('count-todo').textContent       = topLevel.filter(t => t.status === 'To-Do').length;
+  document.getElementById('count-inprogress').textContent = topLevel.filter(t => t.status === 'In-Progress').length;
+  document.getElementById('count-done').textContent       = topLevel.filter(t => t.status === 'Done').length;
 }
 
 /** Builds and returns a task card <li> element. */
@@ -223,8 +224,14 @@ function isOverdue(task) {
 
 // ─── SORTABLEJS DRAG-AND-DROP ─────────────────────────────────────────────────
 
-/** Initialises SortableJS on all Kanban columns after the board is rendered. */
+/** Initialises SortableJS on all Kanban columns after the board is rendered.
+ *  Guarded by _sortableInited so it only runs once regardless of how many
+ *  times loadTasks() / showLoading(false) is called during a session.
+ */
 function initSortable() {
+  if (_sortableInited) return;
+  _sortableInited = true;
+
   const columns = document.querySelectorAll('.task-list');
   columns.forEach(col => {
     Sortable.create(col, {
