@@ -22,6 +22,23 @@ let aiSuggestions  = [];     // last Gemini AI sub-task suggestions
 let reportChart    = null;   // Chart.js instance (keep ref to destroy on re-open)
 let _sortableInited = false; // guard: initSortable() must only run once
 
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+
+/** Hours before due date at which a task is considered "due soon". */
+const DUE_SOON_HOURS = 48;
+
+// ─── SHARED UTILITIES ─────────────────────────────────────────────────────────
+
+/**
+ * Sets the textContent of an element by ID, silently skipping missing elements.
+ * @param {string} id
+ * @param {string|number} value
+ */
+function setElText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
 // ─── INITIALISATION ───────────────────────────────────────────────────────────
 
 /**
@@ -43,15 +60,40 @@ function onUserInfoLoaded(userInfo) {
   }
   currentUser = userInfo;
 
-  // Update navbar
-  document.getElementById('user-email').textContent  = userInfo.email;
-  document.getElementById('user-email').classList.remove('hidden');
-  document.getElementById('role-badge').textContent   = userInfo.role;
-  document.getElementById('role-badge').classList.remove('hidden');
+  // --- User email ---
+  const emailEl = document.getElementById('user-email');
+  emailEl.textContent = userInfo.email;
+  emailEl.classList.remove('hidden');
+
+  // --- Role badge (colour per role) ---
+  const roleClass = 'badge-' + userInfo.role.toLowerCase().replace(/\s+/g, '-');
+  ['role-badge', 'role-badge-mobile'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = userInfo.role;
+    el.className = el.className.replace(/badge-\S+/g, '').trim();
+    el.classList.add('role-badge', roleClass);
+    if (id === 'role-badge-mobile') el.classList.add('role-badge-sm');
+    el.classList.remove('hidden');
+  });
+
+  // --- User avatar (initials) ---
+  const initials = userInfo.email ? userInfo.email[0].toUpperCase() : '?';
+  ['user-avatar', 'user-avatar-mobile'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = initials;
+    el.classList.remove('hidden');
+  });
+
+  // --- Action buttons ---
   document.getElementById('btn-report').classList.remove('hidden');
   document.getElementById('btn-create').classList.remove('hidden');
 
-  // Show filter bar for Lead / Main Lead
+  // --- Stats strip (always visible once loaded) ---
+  document.getElementById('stats-strip').classList.remove('hidden');
+
+  // --- Filter bar for Lead / Main Lead ---
   if (userInfo.role === 'Lead' || userInfo.role === 'Main Lead') {
     document.getElementById('filter-bar').classList.remove('hidden');
   }
@@ -117,14 +159,23 @@ function normaliseTask(raw) {
 
 /** Renders task cards into the three Kanban columns. */
 function renderBoard(tasks) {
+  const EMPTY_IDS = {
+    'To-Do':       'col-todo-empty',
+    'In-Progress': 'col-inprogress-empty',
+    'Done':        'col-done-empty'
+  };
   const cols = {
     'To-Do':       document.getElementById('col-todo'),
     'In-Progress': document.getElementById('col-inprogress'),
     'Done':        document.getElementById('col-done')
   };
 
-  // Clear existing cards
-  Object.values(cols).forEach(col => { col.innerHTML = ''; });
+  // Clear existing cards (but keep the empty-state li)
+  Object.entries(cols).forEach(([status, col]) => {
+    Array.from(col.children).forEach(child => {
+      if (child.id !== EMPTY_IDS[status]) col.removeChild(child);
+    });
+  });
 
   // Separate top-level tasks from sub-tasks
   const topLevel = tasks.filter(t => !t.parentTaskId);
@@ -137,79 +188,113 @@ function renderBoard(tasks) {
     }
   });
 
-  // Update counters – count only top-level tasks to match visible card count
-  document.getElementById('count-todo').textContent       = topLevel.filter(t => t.status === 'To-Do').length;
-  document.getElementById('count-inprogress').textContent = topLevel.filter(t => t.status === 'In-Progress').length;
-  document.getElementById('count-done').textContent       = topLevel.filter(t => t.status === 'Done').length;
+  // Show / hide empty states
+  Object.entries(EMPTY_IDS).forEach(([status, emptyId]) => {
+    const emptyEl = document.getElementById(emptyId);
+    if (!emptyEl) return;
+    const hasCards = topLevel.some(t => t.status === status);
+    emptyEl.style.display = hasCards ? 'none' : '';
+  });
+
+  // Update counters and KPI strip
+  const todoCnt   = topLevel.filter(t => t.status === 'To-Do').length;
+  const inpCnt    = topLevel.filter(t => t.status === 'In-Progress').length;
+  const doneCnt   = topLevel.filter(t => t.status === 'Done').length;
+  document.getElementById('count-todo').textContent       = todoCnt;
+  document.getElementById('count-inprogress').textContent = inpCnt;
+  document.getElementById('count-done').textContent       = doneCnt;
+
+  updateStats(topLevel);
 }
 
-/** Builds and returns a task card <li> element. */
+/** Builds and returns an enterprise-styled task card <li> element. */
 function buildTaskCard(task, subTasks) {
   const li = document.createElement('li');
-  li.className = 'task-card bg-white rounded-xl border border-slate-200 shadow-sm p-4 cursor-grab ' +
-                 'hover:shadow-md transition select-none' +
-                 (task.status === 'Done' ? ' task-done' : '');
   li.dataset.id = task.taskId;
 
-  // Due date display
-  const dueDateHtml = task.dueDate
-    ? `<span class="text-xs ${isOverdue(task) ? 'text-red-500 font-semibold' : 'text-slate-400'}">
-         📅 ${task.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-       </span>`
-    : '';
+  // Determine card accent class
+  let accentClass = 'card-normal';
+  if (task.status === 'Done') {
+    accentClass = 'task-done';
+  } else if (isOverdue(task)) {
+    accentClass = 'card-overdue';
+  } else if (isDueSoon(task)) {
+    accentClass = 'card-duesoon';
+  }
+  li.className = 'task-card ' + accentClass;
 
-  // Sub-task count badge
+  // --- Due date badge ---
+  let dueDateHtml = '';
+  if (task.dueDate) {
+    const overdue = isOverdue(task);
+    const dueSoon = isDueSoon(task);
+    const dateStr = task.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const dueCls  = overdue  ? 'text-rose-600 font-semibold bg-rose-50 border border-rose-200'
+                  : dueSoon  ? 'text-amber-600 font-semibold bg-amber-50 border border-amber-200'
+                  :            'text-slate-400 bg-slate-50 border border-slate-200';
+    const dueIcon = overdue ? '⚠️' : '📅';
+    dueDateHtml = `<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-md ${dueCls}">
+      ${dueIcon} ${escHtml(dateStr)}${overdue ? ' · Overdue' : ''}
+    </span>`;
+  }
+
+  // --- Sub-task badge ---
   const subBadge = subTasks.length > 0
-    ? `<span class="text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-full font-medium">
-         🔗 ${subTasks.length} sub-task${subTasks.length > 1 ? 's' : ''}
+    ? `<span class="inline-flex items-center gap-1 text-xs bg-indigo-50 text-indigo-600 border border-indigo-200 px-1.5 py-0.5 rounded-md font-medium">
+         🔗 ${subTasks.length}
        </span>`
     : '';
 
-  // Assignee avatar (first letter)
+  // --- Assignee avatar letter ---
   const avatarLetter = task.assignee ? task.assignee[0].toUpperCase() : '?';
 
+  // --- Delete button (Lead / Main Lead only) ---
+  const deleteBtn = (currentUser && currentUser.role !== 'Trainee')
+    ? `<button onclick="confirmDeleteTask('${escHtml(task.taskId)}')"
+         class="card-btn btn-delete" title="Delete task" aria-label="Delete task">
+         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+             d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+         </svg>
+       </button>`
+    : '';
+
   li.innerHTML = `
-    <div class="flex items-start justify-between gap-2">
-      <div class="flex-1 min-w-0">
-        <p class="task-title font-semibold text-slate-800 text-sm leading-snug truncate"
-           title="${escHtml(task.title)}">${escHtml(task.title)}</p>
-        ${task.description
-          ? `<p class="text-xs text-slate-500 mt-1 line-clamp-2">${escHtml(task.description)}</p>`
-          : ''}
-      </div>
-      <div class="flex-shrink-0 flex gap-1">
-        <!-- Edit -->
-        <button onclick="openEditTaskModal('${escHtml(task.taskId)}')"
-          class="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-indigo-600 transition"
-          title="Edit task">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-        </button>
-        <!-- Delete (Lead / Main Lead only) -->
-        ${currentUser && currentUser.role !== 'Trainee'
-          ? `<button onclick="confirmDeleteTask('${escHtml(task.taskId)}')"
-               class="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-red-500 transition"
-               title="Delete task">
-               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                   d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-               </svg>
-             </button>`
-          : ''}
-      </div>
-    </div>
-    <div class="flex items-center justify-between mt-3 gap-2 flex-wrap">
-      <div class="flex items-center gap-1.5">
-        <div class="w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-bold flex-shrink-0">
-          ${avatarLetter}
+    <div class="p-3.5">
+      <!-- Title row -->
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex-1 min-w-0 pr-1">
+          <p class="task-title text-slate-800 text-sm font-semibold leading-snug truncate"
+             title="${escHtml(task.title)}">${escHtml(task.title)}</p>
+          ${task.description
+            ? `<p class="text-xs text-slate-400 mt-1 line-clamp-2 leading-relaxed">${escHtml(task.description)}</p>`
+            : ''}
         </div>
-        <span class="text-xs text-slate-500 truncate max-w-[140px]">${escHtml(task.assignee)}</span>
+        <div class="card-actions flex gap-0.5 flex-shrink-0">
+          <button onclick="openEditTaskModal('${escHtml(task.taskId)}')"
+            class="card-btn btn-edit" title="Edit task" aria-label="Edit task">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+            </svg>
+          </button>
+          ${deleteBtn}
+        </div>
       </div>
-      <div class="flex items-center gap-2">
-        ${subBadge}
-        ${dueDateHtml}
+      <!-- Footer row -->
+      <div class="flex items-center justify-between mt-3 gap-2">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <div class="w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 flex items-center
+                      justify-center text-xs font-bold flex-shrink-0" aria-hidden="true">
+            ${avatarLetter}
+          </div>
+          <span class="text-xs text-slate-400 truncate max-w-[130px]"
+                title="${escHtml(task.assignee)}">${escHtml(task.assignee)}</span>
+        </div>
+        <div class="flex items-center gap-1.5 flex-shrink-0">
+          ${subBadge}
+          ${dueDateHtml}
+        </div>
       </div>
     </div>`;
 
@@ -220,6 +305,24 @@ function buildTaskCard(task, subTasks) {
 function isOverdue(task) {
   if (!task.dueDate || task.status === 'Done') return false;
   return task.dueDate < new Date();
+}
+
+/** Returns true if the task is due within the DUE_SOON_HOURS threshold and not Done or overdue. */
+function isDueSoon(task) {
+  if (!task.dueDate || task.status === 'Done' || isOverdue(task)) return false;
+  return task.dueDate < new Date(Date.now() + DUE_SOON_HOURS * 3600 * 1000);
+}
+
+/** Updates the stats KPI strip with current task counts. */
+function updateStats(topLevelTasks) {
+  const total   = topLevelTasks.length;
+  const inpCnt  = topLevelTasks.filter(t => t.status === 'In-Progress').length;
+  const doneCnt = topLevelTasks.filter(t => t.status === 'Done').length;
+  const overdue = topLevelTasks.filter(t => isOverdue(t)).length;
+  setElText('stat-total',      total);
+  setElText('stat-inprogress', inpCnt);
+  setElText('stat-done',       doneCnt);
+  setElText('stat-overdue',    overdue);
 }
 
 // ─── SORTABLEJS DRAG-AND-DROP ─────────────────────────────────────────────────
@@ -288,11 +391,17 @@ function updateColumnCounters() {
   const counts = { 'To-Do': 0, 'In-Progress': 0, 'Done': 0 };
   document.querySelectorAll('.task-list').forEach(col => {
     const status = col.dataset.status;
-    counts[status] = col.querySelectorAll('li').length;
+    // Count li children that are NOT the empty-state placeholder
+    counts[status] = Array.from(col.children).filter(
+      c => !c.id.endsWith('-empty')
+    ).length;
   });
   document.getElementById('count-todo').textContent       = counts['To-Do'];
   document.getElementById('count-inprogress').textContent = counts['In-Progress'];
   document.getElementById('count-done').textContent       = counts['Done'];
+  // Keep KPI strip in sync using current allTasks state
+  const topLevel = allTasks.filter(t => !t.parentTaskId);
+  updateStats(topLevel);
 }
 
 // ─── FILTERS ──────────────────────────────────────────────────────────────────
@@ -333,7 +442,28 @@ function applyFilters() {
     filtered = filtered.filter(t => teamEmails.includes(t.assignee));
   }
 
+  // Show / hide "Clear" button
+  const clearBtn = document.getElementById('btn-clear-filters');
+  if (clearBtn) {
+    if (assigneeFilter || teamFilter) {
+      clearBtn.classList.remove('hidden');
+    } else {
+      clearBtn.classList.add('hidden');
+    }
+  }
+
   renderBoard(filtered);
+}
+
+/** Resets all active filters. */
+function clearFilters() {
+  const assigneeSel = document.getElementById('filter-assignee');
+  const teamSel     = document.getElementById('filter-team');
+  if (assigneeSel) assigneeSel.value = '';
+  if (teamSel)     teamSel.value     = '';
+  const clearBtn = document.getElementById('btn-clear-filters');
+  if (clearBtn) clearBtn.classList.add('hidden');
+  renderBoard(allTasks);
 }
 
 // ─── CREATE / EDIT TASK MODAL ─────────────────────────────────────────────────
@@ -351,6 +481,16 @@ function openCreateTaskModal() {
   document.getElementById('ai-results').classList.add('hidden');
   document.getElementById('btn-accept-split').classList.add('hidden');
   aiSuggestions = [];
+
+  // Enforce assignee visibility based on role every time modal opens
+  const assigneeField = document.getElementById('assignee-field');
+  if (assigneeField) {
+    if (currentUser && currentUser.role === 'Trainee') {
+      assigneeField.classList.add('hidden');
+    } else {
+      assigneeField.classList.remove('hidden');
+    }
+  }
 
   // Set assignee dropdown to current user
   const sel = document.getElementById('form-assignee');
@@ -630,43 +770,50 @@ function closeReportModal() {
 function renderReport(data) {
   document.getElementById('report-loading').classList.add('hidden');
   document.getElementById('report-content').classList.remove('hidden');
-  document.getElementById('report-week-range').textContent = 'Week: ' + (data.weekRange || '');
+  document.getElementById('report-week-range').textContent = data.weekRange || '';
+
+  // Inline stat pills
+  const cd = data.chartData || {};
+  setElText('rstat-done',       cd.done       || 0);
+  setElText('rstat-inprogress', cd.inProgress || 0);
+  setElText('rstat-todo',       cd.todo       || 0);
+  setElText('rstat-total',      cd.total      || (cd.done || 0) + (cd.inProgress || 0) + (cd.todo || 0));
 
   // Build summary table
   const tbody = document.getElementById('report-table-body');
   tbody.innerHTML = '';
   (data.summary || []).forEach((row, i) => {
     const tr = document.createElement('tr');
-    tr.className = i % 2 === 0 ? 'bg-white' : 'bg-slate-50';
+    tr.className = i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
     tr.innerHTML = `
-      <td class="px-4 py-2 text-slate-700 text-sm">${escHtml(row.email)}</td>
-      <td class="px-4 py-2 text-center text-emerald-600 font-semibold">${row.done}</td>
-      <td class="px-4 py-2 text-center text-amber-600 font-semibold">${row.inProgress}</td>
-      <td class="px-4 py-2 text-center text-slate-500">${row.todo}</td>
-      <td class="px-4 py-2 text-center text-slate-700 font-medium">${row.total}</td>`;
+      <td class="text-slate-700 text-sm font-medium">${escHtml(row.email)}</td>
+      <td class="text-center text-emerald-600 font-semibold">${row.done}</td>
+      <td class="text-center text-amber-600 font-semibold">${row.inProgress}</td>
+      <td class="text-center text-slate-500">${row.todo}</td>
+      <td class="text-center text-slate-700 font-bold">${row.total}</td>`;
     tbody.appendChild(tr);
   });
 
-  // Chart.js pie chart
-  const cd = data.chartData || {};
+  // Chart.js doughnut chart
   const ctx = document.getElementById('report-chart').getContext('2d');
   reportChart = new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: ['Done', 'In-Progress', 'To-Do'],
+      labels: ['Done', 'In Progress', 'To-Do'],
       datasets: [{
         data: [cd.done || 0, cd.inProgress || 0, cd.todo || 0],
-        backgroundColor: ['#10B981', '#F59E0B', '#94A3B8'],
-        borderWidth: 2,
-        borderColor: '#ffffff'
+        backgroundColor: ['#10B981', '#F59E0B', '#CBD5E1'],
+        borderWidth: 3,
+        borderColor: '#ffffff',
+        hoverOffset: 4
       }]
     },
     options: {
       responsive: true,
       plugins: {
-        legend: { position: 'bottom', labels: { font: { size: 12 } } }
+        legend: { display: false }
       },
-      cutout: '65%'
+      cutout: '68%'
     }
   });
 }

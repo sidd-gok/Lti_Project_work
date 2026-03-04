@@ -281,6 +281,11 @@ function updateTask(taskData) {
 
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][taskIdCol]) === String(taskData.taskId)) {
+      // RBAC: Trainees can only edit tasks assigned to them
+      if (userInfo.role === 'Trainee' && data[i][assignCol] !== userInfo.email) {
+        return { success: false, error: 'Permission denied' };
+      }
+
       // Trainees cannot reassign tasks
       const newAssignee = (userInfo.role === 'Trainee')
         ? data[i][assignCol]
@@ -311,10 +316,28 @@ function deleteTask(taskId) {
   const sheet = getSheet('Tasks');
   const data = sheet.getDataRange().getValues();
   const headers = data[0];
-  const taskIdCol = headers.indexOf('Task_ID');
+  const taskIdCol  = headers.indexOf('Task_ID');
+  const assigneeCol = headers.indexOf('Assignee_Email');
+
+  // Pre-build the set of visible member emails for Lead scope check
+  let visibleEmails = null;
+  if (userInfo.role === 'Lead') {
+    const users = sheetToObjects(getSheet('Users'));
+    const teams = sheetToObjects(getSheet('Teams'));
+    const ledTeamIds = new Set(
+      teams.filter(t => t['Lead_Email'] === userInfo.email).map(t => String(t['Team_ID']))
+    );
+    visibleEmails = new Set(
+      users.filter(u => ledTeamIds.has(String(u['Team_ID']))).map(u => u['Email'])
+    );
+  }
 
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][taskIdCol]) === String(taskId)) {
+      // Leads may only delete tasks assigned to members of their project(s)
+      if (visibleEmails && !visibleEmails.has(data[i][assigneeCol])) {
+        return { success: false, error: 'Permission denied' };
+      }
       sheet.deleteRow(i + 1);
       return { success: true };
     }

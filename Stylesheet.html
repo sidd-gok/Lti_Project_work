@@ -1,182 +1,612 @@
 <style>
 /* =============================================================================
-   KANBAN BOARD – Custom CSS Overrides (Stylesheet.html)
+   ProjectFlow – Enterprise Kanban Styles  (Stylesheet.html)
    =============================================================================
-   These styles complement Tailwind CSS and add enterprise-grade visual polish.
+   Design system built on top of Tailwind CSS.
+   Uses CSS custom properties for consistent theming.
    ============================================================================= */
 
-/* ── Base & Typography ─────────────────────────────────────────────────────── */
+/* ── Design Tokens ──────────────────────────────────────────────────────────── */
 
-*, *::before, *::after {
-  box-sizing: border-box;
+:root {
+  --color-primary:      #4F46E5;
+  --color-primary-dark: #3730A3;
+  --color-primary-lt:   #E0E7FF;
+  --color-success:      #10B981;
+  --color-warning:      #F59E0B;
+  --color-danger:       #EF4444;
+  --color-info:         #6366F1;
+  --color-border:       #E2E8F0;
+  --color-bg-board:     #F0F2F7;
+  --color-text-muted:   #64748B;
+  --radius-card:        14px;
+  --radius-modal:       18px;
+  --shadow-card:        0 1px 4px rgba(15,23,42,0.07), 0 1px 2px rgba(15,23,42,0.04);
+  --shadow-card-hover:  0 8px 24px rgba(79,70,229,0.11), 0 2px 6px rgba(15,23,42,0.05);
+  --shadow-modal:       0 24px 64px rgba(15,23,42,0.18), 0 4px 16px rgba(15,23,42,0.08);
+  /* Reusable chevron-down icon for <select> elements */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%2394A3B8' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 }
+
+/* ── Base ────────────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background-color: var(--color-bg-board);
 }
 
-/* ── Kanban Column ─────────────────────────────────────────────────────────── */
+.bg-board-bg { background-color: var(--color-bg-board); }
+
+/* ── Navigation ──────────────────────────────────────────────────────────────── */
+
+.app-nav {
+  background: linear-gradient(135deg, #312E81 0%, #4338CA 60%, #4F46E5 100%);
+  box-shadow: 0 2px 8px rgba(49,46,129,0.35);
+}
+
+.brand-icon {
+  width: 32px;
+  height: 32px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Nav buttons */
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+  border: none;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.nav-btn-ghost {
+  background: rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.85);
+  border: 1px solid rgba(255,255,255,0.15);
+}
+.nav-btn-ghost:hover {
+  background: rgba(255,255,255,0.18);
+  color: #fff;
+}
+
+.nav-btn-primary {
+  background: #10B981;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(16,185,129,0.35);
+}
+.nav-btn-primary:hover {
+  background: #059669;
+  box-shadow: 0 3px 10px rgba(16,185,129,0.4);
+}
+
+/* ── User Avatar ─────────────────────────────────────────────────────────────── */
+
+.user-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+  border: 2px solid rgba(255,255,255,0.25);
+  cursor: default;
+  background: #818CF8;
+  color: #fff;
+}
+.user-avatar-sm {
+  width: 26px;
+  height: 26px;
+  font-size: 0.65rem;
+}
+
+/* ── Role Badges ─────────────────────────────────────────────────────────────── */
+
+.role-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 99px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.role-badge-sm {
+  padding: 1px 5px;
+  font-size: 0.55rem;
+}
+
+/* Role-specific colors */
+.role-badge.badge-main-lead {
+  background: #FEF3C7;
+  color: #92400E;
+  border: 1px solid #FDE68A;
+}
+.role-badge.badge-lead {
+  background: #EDE9FE;
+  color: #5B21B6;
+  border: 1px solid #C4B5FD;
+}
+.role-badge.badge-trainee {
+  background: #DCFCE7;
+  color: #166534;
+  border: 1px solid #BBF7D0;
+}
+
+/* ── Stats KPI Strip ─────────────────────────────────────────────────────────── */
+
+.stat-tile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px 4px 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.stat-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.stat-label {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94A3B8;
+  line-height: 1;
+}
+.stat-value {
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-top: 1px;
+}
+.stat-divider {
+  width: 1px;
+  height: 28px;
+  background: #E2E8F0;
+  flex-shrink: 0;
+  margin: 0 4px;
+}
+
+/* ── Filter Bar ──────────────────────────────────────────────────────────────── */
+
+.filter-select {
+  appearance: none;
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding: 4px 28px 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  font-size: 0.75rem;
+  color: #374151;
+  background-color: #F8FAFC;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  min-width: 110px;
+}
+.filter-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.15);
+  background-color: #fff;
+}
+
+/* ── Kanban Columns ──────────────────────────────────────────────────────────── */
 
 .kanban-col {
-  min-height: 480px;
-  transition: box-shadow 0.2s ease;
+  background: #fff;
+  border-radius: 16px;
+  border: 1px solid rgba(226,232,240,0.7);
+  box-shadow: 0 1px 4px rgba(15,23,42,0.05);
+  overflow: hidden;
+  min-height: 440px;
+  transition: box-shadow 0.2s;
 }
 
-.kanban-col:hover {
-  box-shadow: 0 4px 24px rgba(79, 70, 229, 0.08);
+.col-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #F1F5F9;
+  background: #FAFBFC;
 }
 
-/* Column header gradient accents */
-#col-todo     + * .col-header,
-.kanban-col:nth-child(1) .col-header { border-top: 3px solid #94A3B8; border-radius: 16px 16px 0 0; }
-.kanban-col:nth-child(2) .col-header { border-top: 3px solid #F59E0B; border-radius: 16px 16px 0 0; }
-.kanban-col:nth-child(3) .col-header { border-top: 3px solid #10B981; border-radius: 16px 16px 0 0; }
+.col-header-todo        { border-top: 3px solid #94A3B8; border-radius: 15px 15px 0 0; }
+.col-header-inprogress  { border-top: 3px solid #F59E0B; border-radius: 15px 15px 0 0; }
+.col-header-done        { border-top: 3px solid #10B981; border-radius: 15px 15px 0 0; }
 
-/* ── Task Card ─────────────────────────────────────────────────────────────── */
+.col-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.col-dot-todo       { background: #94A3B8; }
+.col-dot-inprogress { background: #F59E0B; }
+.col-dot-done       { background: #10B981; }
+
+.col-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #1E293B;
+  letter-spacing: 0.01em;
+}
+
+.col-count {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 99px;
+}
+.col-count-todo       { background: #F1F5F9; color: #64748B; }
+.col-count-inprogress { background: #FEF3C7; color: #B45309; }
+.col-count-done       { background: #DCFCE7; color: #166534; }
+
+/* ── Task List & Scrollbar ───────────────────────────────────────────────────── */
+
+.task-list {
+  overflow-y: auto;
+  max-height: calc(100vh - 240px);
+  scrollbar-width: thin;
+  scrollbar-color: #CBD5E1 transparent;
+}
+.task-list::-webkit-scrollbar       { width: 4px; }
+.task-list::-webkit-scrollbar-track { background: transparent; }
+.task-list::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 99px; }
+
+/* ── Empty State ─────────────────────────────────────────────────────────────── */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  pointer-events: none;
+  user-select: none;
+  border-radius: 10px;
+}
+
+/* ── Task Cards ──────────────────────────────────────────────────────────────── */
 
 .task-card {
-  border-left: 3px solid #6366F1;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.2s ease;
+  background: #fff;
+  border-radius: var(--radius-card);
+  border: 1px solid #EEF0F5;
+  box-shadow: var(--shadow-card);
+  cursor: grab;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  list-style: none;
+}
+
+.task-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--card-accent, #6366F1);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
 }
 
 .task-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.12);
+  box-shadow: var(--shadow-card-hover);
 }
 
-/* ── Done State Visual Cue ─────────────────────────────────────────────────── */
+.task-card:active { cursor: grabbing; }
 
-/**
- * Applied automatically when a card is dragged into the "Done" column,
- * or pre-applied on load for tasks already in Done status.
- */
+/* Card accent colors by status */
+.task-card.card-overdue  { --card-accent: #EF4444; }
+.task-card.card-duesoon  { --card-accent: #F59E0B; }
+.task-card.task-done     { --card-accent: #10B981; }
+.task-card.card-normal   { --card-accent: #6366F1; }
+
+/* Done state */
 .task-done {
-  opacity: 0.55;
-  border-left-color: #10B981;
+  opacity: 0.62;
 }
-
 .task-done .task-title {
   text-decoration: line-through;
-  color: #64748b;
+  color: #94A3B8;
 }
 
-/* ── SortableJS Ghost & Drag ───────────────────────────────────────────────── */
+/* Card action buttons – visible on hover only */
+.card-actions {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.task-card:hover .card-actions { opacity: 1; }
+
+.card-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #94A3B8;
+  transition: background 0.12s, color 0.12s;
+}
+.card-btn:hover { background: #F1F5F9; }
+.card-btn.btn-edit:hover  { color: #4F46E5; }
+.card-btn.btn-delete:hover{ color: #EF4444; }
+
+/* ── SortableJS Ghost & Drag ─────────────────────────────────────────────────── */
 
 .sortable-ghost {
-  opacity: 0.35;
-  background: #E0E7FF !important;
-  border: 2px dashed #6366F1 !important;
-  border-radius: 12px;
+  opacity: 0.3;
+  background: var(--color-primary-lt) !important;
+  border: 2px dashed var(--color-info) !important;
+  border-radius: var(--radius-card);
 }
 
 .sortable-drag {
-  opacity: 0.95 !important;
-  box-shadow: 0 12px 32px rgba(99, 102, 241, 0.25) !important;
-  transform: rotate(1.5deg);
+  opacity: 0.97 !important;
+  box-shadow: 0 16px 40px rgba(79,70,229,0.22) !important;
+  transform: rotate(1deg);
   cursor: grabbing;
 }
 
-/* ── Drop Zone Highlight ───────────────────────────────────────────────────── */
-
 .task-list.sortable-over {
-  background: rgba(99, 102, 241, 0.04);
+  background: rgba(99,102,241,0.03);
   border-radius: 12px;
-  outline: 2px dashed #A5B4FC;
+  outline: 1.5px dashed #A5B4FC;
 }
 
-/* ── Scrollbar (for long column lists) ────────────────────────────────────── */
+/* ── Loader Ring ─────────────────────────────────────────────────────────────── */
 
-.task-list {
+.loader-ring {
+  width: 44px;
+  height: 44px;
+  border: 3px solid #E0E7FF;
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Modals ──────────────────────────────────────────────────────────────────── */
+
+.modal-backdrop {
+  background: rgba(15,23,42,0.45);
+  backdrop-filter: blur(5px);
+  animation: fadeIn 0.18s ease;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.modal-box {
+  background: #fff;
+  border-radius: var(--radius-modal);
+  box-shadow: var(--shadow-modal);
+  max-height: 90vh;
   overflow-y: auto;
-  max-height: calc(100vh - 220px);
-  scrollbar-width: thin;
-  scrollbar-color: #C7D2FE transparent;
+  animation: slideUp 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-
-.task-list::-webkit-scrollbar {
-  width: 5px;
-}
-
-.task-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.task-list::-webkit-scrollbar-thumb {
-  background: #C7D2FE;
-  border-radius: 99px;
-}
-
-/* ── Modals ────────────────────────────────────────────────────────────────── */
-
-#task-modal,
-#report-modal {
-  backdrop-filter: blur(4px);
-  animation: fadeInOverlay 0.18s ease;
-}
-
-@keyframes fadeInOverlay {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-#task-modal > div,
-#report-modal > div {
-  animation: slideUpModal 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-@keyframes slideUpModal {
-  from { transform: translateY(32px); opacity: 0; }
+@keyframes slideUp {
+  from { transform: translateY(28px); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }
 }
 
-/* ── Loading Spinner ────────────────────────────────────────────────────────── */
-
-#loading-overlay {
-  transition: opacity 0.25s ease;
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #F1F5F9;
 }
 
-/* ── Filter Bar ─────────────────────────────────────────────────────────────── */
-
-#filter-bar select:focus {
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+.modal-body   { padding: 18px 20px; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #F1F5F9;
+  margin-top: 4px;
 }
 
-/* ── AI Section ─────────────────────────────────────────────────────────────── */
+.modal-close-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: #94A3B8;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+  flex-shrink: 0;
+  margin-top: -2px;
+}
+.modal-close-btn:hover { color: #374151; background: #F1F5F9; }
 
-#ai-section {
-  border-left: 3px solid #6366F1;
+/* ── Form Elements ───────────────────────────────────────────────────────────── */
+
+.form-group { display: flex; flex-direction: column; gap: 5px; }
+
+.form-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+  letter-spacing: 0.01em;
 }
 
-/* ── Report Table ───────────────────────────────────────────────────────────── */
+.form-input,
+.form-textarea,
+.form-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1.5px solid #E5E7EB;
+  border-radius: 9px;
+  font-size: 0.8125rem;
+  color: #1F2937;
+  background: #F9FAFB;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  outline: none;
+}
+.form-input:focus,
+.form-textarea:focus,
+.form-select:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.14);
+  background: #fff;
+}
+.form-textarea { resize: none; }
+.form-select {
+  appearance: none;
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+.form-input::placeholder,
+.form-textarea::placeholder { color: #9CA3AF; }
 
-#report-table-body tr:last-child td:first-child {
-  border-radius: 0 0 0 8px;
+/* ── Button System ───────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s, box-shadow 0.15s, opacity 0.15s;
+  white-space: nowrap;
+}
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(79,70,229,0.3);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-primary-dark);
+  box-shadow: 0 4px 12px rgba(79,70,229,0.35);
 }
 
-#report-table-body tr:last-child td:last-child {
-  border-radius: 0 0 8px 0;
+.btn-success {
+  background: #10B981;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(16,185,129,0.3);
+}
+.btn-success:hover:not(:disabled) { background: #059669; }
+
+.btn-danger {
+  background: #EF4444;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(239,68,68,0.25);
+}
+.btn-danger:hover:not(:disabled) { background: #DC2626; }
+
+.btn-ghost {
+  background: transparent;
+  color: #6B7280;
+  border: 1.5px solid #E5E7EB;
+}
+.btn-ghost:hover:not(:disabled) { background: #F9FAFB; color: #374151; }
+
+/* ── AI Panel ────────────────────────────────────────────────────────────────── */
+
+.ai-panel {
+  background: linear-gradient(135deg, #EEF2FF 0%, #F5F3FF 100%);
+  border: 1px solid #C7D2FE;
+  border-left: 3px solid var(--color-primary);
+  border-radius: 10px;
+  padding: 14px;
 }
 
-/* ── Responsive Adjustments ─────────────────────────────────────────────────── */
-
-@media (max-width: 768px) {
-  .task-list {
-    max-height: 320px;
-  }
-
-  #filter-bar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
-
-  nav .flex.items-center.gap-4 {
-    gap: 8px;
-  }
+.ai-badge {
+  background: #EDE9FE;
+  color: #6D28D9;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-/* ── Utility: line-clamp for description preview ────────────────────────────── */
+.ai-suggest-btn {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ai-suggest-btn:hover:not(:disabled) { background: var(--color-primary-dark); }
+.ai-suggest-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── Report Modal ────────────────────────────────────────────────────────────── */
+
+.report-stat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #F8FAFC;
+}
+.report-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+#report-table-body tr:nth-child(even) { background: #F8FAFC; }
+#report-table-body td { padding: 9px 16px; border-bottom: 1px solid #F1F5F9; }
+#report-table-body tr:last-child td { border-bottom: none; }
+
+/* ── Utility: line-clamp ─────────────────────────────────────────────────────── */
 
 .line-clamp-2 {
   display: -webkit-box;
@@ -185,9 +615,20 @@ body {
   overflow: hidden;
 }
 
-/* ── SweetAlert2 custom z-index (above modals) ──────────────────────────────── */
+/* ── Ensure Tailwind .hidden overrides any custom display rules ──────────────── */
 
-.swal2-container {
-  z-index: 9999 !important;
+.hidden { display: none !important; }
+
+/* ── SweetAlert2 z-index ─────────────────────────────────────────────────────── */
+
+.swal2-container { z-index: 9999 !important; }
+
+/* ── Responsive ──────────────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .task-list { max-height: 340px; }
+  #filter-bar { flex-direction: column; align-items: flex-start; }
+  .modal-box { border-radius: 14px; }
+  .stat-divider { display: none; }
 }
 </style>
