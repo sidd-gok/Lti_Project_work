@@ -5,33 +5,30 @@
  *
  * SETUP INSTRUCTIONS:
  * -------------------
- * 1. Open Google Sheets and create a new spreadsheet.
- * 2. Create the following sheets (tabs) with exact column headers:
+ * 1. Open (or create) a Google Spreadsheet.
+ * 2. From the spreadsheet, open Extensions > Apps Script and paste this code.
+ *    (When bound to a spreadsheet this way you do NOT need to set SPREADSHEET_ID.)
  *
- *    Sheet: "Users"
- *      A1: Email  |  B1: Role  |  C1: Team_ID
- *      Role values: "Main Lead", "Lead", "Trainee"
+ * 3. Reload the spreadsheet.  A new "Kanban Board" menu will appear at the top.
+ *    Click  Kanban Board > Set Up Sheets  to auto-create the three required tabs:
+ *      - Users  (Email | Role | Team_ID)
+ *      - Tasks  (Task_ID | Title | Description | Assignee_Email | Status |
+ *                Created_Date | Due_Date | Parent_Task_ID)
+ *      - Teams  (Team_ID | Lead_Email | Project_Name)
+ *    Sheets that already exist are left untouched, so it is safe to re-run.
  *
- *    Sheet: "Tasks"
- *      A1: Task_ID  |  B1: Title  |  C1: Description  |  D1: Assignee_Email
- *      E1: Status   |  F1: Created_Date  |  G1: Due_Date  |  H1: Parent_Task_ID
- *      Status values: "To-Do", "In-Progress", "Done"
+ * 4. Optionally set the constants below:
+ *    - SPREADSHEET_ID  (only needed when running as a standalone / web-app
+ *                       deployment that is NOT bound to a sheet)
+ *    - CHAT_WEBHOOK_URL  – Google Chat space webhook for EOD reminders
+ *    - GEMINI_API_KEY    – Gemini API key from Google AI Studio
  *
- *    Sheet: "Teams"
- *      A1: Team_ID  |  B1: Lead_Email  |  C1: Project_Name
- *
- * 3. In Apps Script Editor (Extensions > Apps Script):
- *    - Paste this code into Code.gs
- *    - Set the SPREADSHEET_ID constant below to your Spreadsheet's ID
- *    - Set CHAT_WEBHOOK_URL to your Google Chat space webhook URL
- *    - Set GEMINI_API_KEY to your Gemini API key (from Google AI Studio)
- *
- * 4. Deploy as Web App:
+ * 5. Deploy as Web App:
  *    Deploy > New deployment > Web app
  *    Execute as: User accessing the web app
- *    Who has access: Anyone in your organization (or Anyone)
+ *    Who has access: Anyone
  *
- * 5. To enable EOD reminders, run setupTrigger() once from the Apps Script editor.
+ * 6. To enable EOD reminders, run setupTrigger() once from the Apps Script editor.
  * =============================================================================
  */
 
@@ -79,13 +76,103 @@ function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
 
+/**
+ * Adds the "Kanban Board" custom menu to the Google Sheets Extensions bar
+ * every time the bound spreadsheet is opened.
+ * This is a special GAS reserved function — it runs automatically on open.
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Kanban Board')
+    .addItem('Set Up Sheets', 'setupSpreadsheet')
+    .addSeparator()
+    .addItem('Open Kanban App', 'openKanbanApp')
+    .addToUi();
+}
+
+/**
+ * Opens the deployed Kanban web app in a new browser tab (called from the menu).
+ * If the script has not been deployed as a web app yet, shows a friendly message.
+ */
+function openKanbanApp() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const url = ScriptApp.getService().getUrl();
+    if (!url) throw new Error('not deployed');
+    const html = HtmlService.createHtmlOutput(
+      '<script>window.open(' + JSON.stringify(url) + ',"_blank");google.script.host.close();</script>'
+    ).setWidth(10).setHeight(10);
+    ui.showModalDialog(html, 'Opening…');
+  } catch (_) {
+    ui.alert(
+      'Kanban Board',
+      'The app has not been deployed as a web app yet.\n\n' +
+      'Go to Deploy > New deployment > Web app to publish it first.',
+      ui.ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Auto-creates the three required sheets (Users, Tasks, Teams) with their
+ * exact header rows if they do not already exist.  Sheets that are already
+ * present are left completely untouched, so this function is safe to re-run.
+ *
+ * Call this once via  Kanban Board > Set Up Sheets  after pasting the script.
+ */
+function setupSpreadsheet() {
+  const ss = getSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  // Schema: { sheetName → [headers] }
+  const SCHEMA = {
+    'Users': ['Email', 'Role', 'Team_ID'],
+    'Tasks': ['Task_ID', 'Title', 'Description', 'Assignee_Email',
+              'Status', 'Created_Date', 'Due_Date', 'Parent_Task_ID'],
+    'Teams': ['Team_ID', 'Lead_Email', 'Project_Name']
+  };
+
+  const created = [];
+  const skipped = [];
+
+  Object.entries(SCHEMA).forEach(([name, headers]) => {
+    if (ss.getSheetByName(name)) {
+      skipped.push(name);
+      return;
+    }
+    const sheet = ss.insertSheet(name);
+    sheet.appendRow(headers);
+
+    // Freeze the header row and bold it for readability
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+
+    // Auto-resize columns to fit the header text
+    headers.forEach((_, i) => sheet.autoResizeColumn(i + 1));
+
+    created.push(name);
+  });
+
+  // Build a human-readable summary message
+  const lines = [];
+  if (created.length)  lines.push('✅ Created: '  + created.join(', '));
+  if (skipped.length)  lines.push('ℹ️  Already existed (untouched): ' + skipped.join(', '));
+  lines.push('');
+  lines.push('You can now populate the sheets and deploy the web app.');
+
+  ui.alert('Kanban Board – Sheet Setup', lines.join('\n'), ui.ButtonSet.OK);
+}
+
 // ─── SPREADSHEET HELPERS ──────────────────────────────────────────────────────
 
 /**
- * Returns the active spreadsheet.
+ * Returns the active spreadsheet when the script is bound to a sheet, or falls
+ * back to opening SPREADSHEET_ID for standalone / web-app deployments.
  * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet}
  */
 function getSpreadsheet() {
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active) return active;
   return SpreadsheetApp.openById(SPREADSHEET_ID);
 }
 
