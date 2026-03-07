@@ -221,13 +221,39 @@ function getCurrentUserEmail() {
 
 /**
  * Looks up the current user's role and team from the Users sheet.
- * @returns {{ email: string, role: string, teamId: string } | null}
+ * If the Users sheet has no data rows yet (first-ever launch), automatically
+ * registers the caller as "Main Lead" so the app is immediately usable.
+ * @returns {{ email: string, role: string, teamId: string, isFirstRun?: boolean } | null}
  */
 function getCurrentUserInfo() {
   const email = getCurrentUserEmail();
-  const users = sheetToObjects(getSheet('Users'));
+  const usersSheet = getSheet('Users');
+  const users = sheetToObjects(usersSheet);
   const user = users.find(u => u['Email'] === email);
-  if (!user) return null;
+
+  if (!user) {
+    // First-ever launch: Users sheet is empty → auto-register as Main Lead
+    if (users.length === 0) {
+      const FIRST_RUN_ROLE   = 'Main Lead';
+      const FIRST_RUN_TEAMID = '1';
+
+      // Build the row respecting the actual column order so it is safe even if
+      // the sheet was created manually with a different column arrangement.
+      const headers = usersSheet.getRange(1, 1, 1, usersSheet.getLastColumn()).getValues()[0];
+      const row = headers.map(h => {
+        if (h === 'Email')   return email;
+        if (h === 'Role')    return FIRST_RUN_ROLE;
+        if (h === 'Team_ID') return FIRST_RUN_TEAMID;
+        return '';
+      });
+      usersSheet.appendRow(row);
+
+      return { email: email, role: FIRST_RUN_ROLE, teamId: FIRST_RUN_TEAMID, isFirstRun: true };
+    }
+    // Sheet has users but this person isn't in it
+    return null;
+  }
+
   return {
     email: email,
     role: user['Role'],

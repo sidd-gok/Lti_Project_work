@@ -60,6 +60,11 @@ function onUserInfoLoaded(userInfo) {
   }
   currentUser = userInfo;
 
+  // First-run: this user was just auto-registered as Main Lead
+  if (userInfo.isFirstRun) {
+    showToast('Welcome! You have been registered as Main Lead. Add team members in the Users sheet.', 'success');
+  }
+
   // --- User email ---
   const emailEl = document.getElementById('user-email');
   emailEl.textContent = userInfo.email;
