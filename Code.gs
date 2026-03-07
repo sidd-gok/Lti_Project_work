@@ -136,8 +136,18 @@ function setupSpreadsheet() {
   const skipped = [];
 
   Object.entries(SCHEMA).forEach(([name, headers]) => {
-    if (ss.getSheetByName(name)) {
-      skipped.push(name);
+    const existing = ss.getSheetByName(name);
+    if (existing) {
+      // Sheet already exists — add header row only if the sheet is completely empty
+      if (existing.getLastRow() === 0) {
+        existing.appendRow(headers);
+        existing.setFrozenRows(1);
+        existing.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+        headers.forEach((_, i) => existing.autoResizeColumn(i + 1));
+        created.push(name + ' (headers added)');
+      } else {
+        skipped.push(name);
+      }
       return;
     }
     const sheet = ss.insertSheet(name);
@@ -221,52 +231,39 @@ function getCurrentUserEmail() {
 
 /**
  * Looks up the current user's role and team from the Users sheet.
- * If the Users sheet has no data rows yet (first-ever launch), automatically
- * registers the caller as "Main Lead" so the app is immediately usable.
- * @returns {{ email: string, role: string, teamId: string, isFirstRun?: boolean } | null}
+ *
+ * The web app is deployed with  executeAs: USER_ACCESSING, so Google forces the
+ * visitor to sign in with their Google account before the script runs.
+ * After sign-in, Session.getActiveUser().getEmail() returns their email which is
+ * matched against the Email column in the Users sheet.
+ *
+ * @returns {{ email: string, role: string, teamId: string } | null}
  */
 function getCurrentUserInfo() {
   const email = getCurrentUserEmail();
-  const usersSheet = getSheet('Users');
-  const users = sheetToObjects(usersSheet);
-  const user = users.find(u => u['Email'] === email);
-
-  if (!user) {
-    // First-ever launch: Users sheet is empty → auto-register as Main Lead
-    if (users.length === 0) {
-      const FIRST_RUN_ROLE   = 'Main Lead';
-      const FIRST_RUN_TEAMID = '1';
-
-      // Build the row respecting the actual column order so it is safe even if
-      // the sheet was created manually with a different column arrangement.
-      const headers = usersSheet.getRange(1, 1, 1, usersSheet.getLastColumn()).getValues()[0];
-      const row = headers.map(h => {
-        if (h === 'Email')   return email;
-        if (h === 'Role')    return FIRST_RUN_ROLE;
-        if (h === 'Team_ID') return FIRST_RUN_TEAMID;
-        return '';
-      });
-      usersSheet.appendRow(row);
-
-      return { email: email, role: FIRST_RUN_ROLE, teamId: FIRST_RUN_TEAMID, isFirstRun: true };
-    }
-    // Sheet has users but this person isn't in it
-    return null;
-  }
-
+  const users = sheetToObjects(getSheet('Users'));
+  const user  = users.find(u => u['Email'] === email);
+  if (!user) return null;
   return {
-    email: email,
-    role: user['Role'],
+    email:  email,
+    role:   user['Role'],
     teamId: String(user['Team_ID'])
   };
 }
 
 /**
- * Exposed to the frontend: returns current user's info for UI personalization.
- * @returns {{ email: string, role: string, teamId: string } | null}
+ * Exposed to the frontend: returns current user's info for UI personalization,
+ * or a { notRegistered: true, email } object so the UI can display the signed-in
+ * email in the "not registered" error message.
+ * @returns {{ email: string, role: string, teamId: string }
+ *           | { notRegistered: true, email: string }}
  */
 function getUserInfo() {
-  return getCurrentUserInfo();
+  const info = getCurrentUserInfo();
+  if (!info) {
+    return { notRegistered: true, email: getCurrentUserEmail() };
+  }
+  return info;
 }
 
 // ─── TASK CRUD ────────────────────────────────────────────────────────────────

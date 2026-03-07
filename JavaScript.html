@@ -54,16 +54,17 @@ function init() {
 
 /** Called when getUserInfo() resolves successfully. */
 function onUserInfoLoaded(userInfo) {
-  if (!userInfo) {
-    showFatalError('You are not registered in the system. Please contact your administrator.');
+  // Not registered: show the signed-in email so the user knows what to add
+  if (!userInfo || userInfo.notRegistered) {
+    const email = userInfo && userInfo.email ? userInfo.email : '(unknown)';
+    showFatalError(
+      'Your Google account (' + email + ') is not registered in the system.\n\n' +
+      'Please add this email address to the Users sheet with the correct Role and Team_ID, ' +
+      'then reload the page.'
+    );
     return;
   }
   currentUser = userInfo;
-
-  // First-run: this user was just auto-registered as Main Lead
-  if (userInfo.isFirstRun) {
-    showToast('Welcome! You have been registered as Main Lead. Add team members in the Users sheet.', 'success');
-  }
 
   // --- User email ---
   const emailEl = document.getElementById('user-email');
