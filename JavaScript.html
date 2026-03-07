@@ -1,0 +1,914 @@
+<script>
+/**
+ * =============================================================================
+ * KANBAN BOARD – Frontend Logic (JavaScript.html)
+ * =============================================================================
+ * Handles:
+ *  - Initialising the page (fetching user info & tasks from GAS backend)
+ *  - Rendering task cards into the three Kanban columns
+ *  - SortableJS drag-and-drop with immediate GAS backend persistence
+ *  - Create / Edit task modal flow
+ *  - Gemini AI sub-task suggestion flow
+ *  - Report modal (Chart.js pie chart + PDF export)
+ *  - Filter bar for Lead / Main Lead
+ * =============================================================================
+ */
+
+// ─── GLOBAL STATE ─────────────────────────────────────────────────────────────
+let currentUser    = null;   // { email, role, teamId }
+let allTasks       = [];     // raw task objects from the backend
+let allMembers     = [];     // team members for assignee dropdowns
+let aiSuggestions  = [];     // last Gemini AI sub-task suggestions
+let reportChart    = null;   // Chart.js instance (keep ref to destroy on re-open)
+let _sortableInited = false; // guard: initSortable() must only run once
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+
+/** Hours before due date at which a task is considered "due soon". */
+const DUE_SOON_HOURS = 48;
+
+// ─── SHARED UTILITIES ─────────────────────────────────────────────────────────
+
+/**
+ * Sets the textContent of an element by ID, silently skipping missing elements.
+ * @param {string} id
+ * @param {string|number} value
+ */
+function setElText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+// ─── INITIALISATION ───────────────────────────────────────────────────────────
+
+/**
+ * Entry point called by the GAS HTML template on DOMContentLoaded.
+ * Loads user info then loads tasks.
+ */
+function init() {
+  google.script.run
+    .withSuccessHandler(onUserInfoLoaded)
+    .withFailureHandler(onError)
+    .getUserInfo();
+}
+
+/** Called when getUserInfo() resolves successfully. */
+function onUserInfoLoaded(userInfo) {
+  // Not registered: show the signed-in email so the user knows what to add
+  if (!userInfo || userInfo.notRegistered) {
+    const email = userInfo && userInfo.email ? userInfo.email : '(unknown)';
+    showFatalError(
+      'Your Google account (' + email + ') is not registered in the system.\n\n' +
+      'Please add this email address to the Users sheet with the correct Role and Team_ID, ' +
+      'then reload the page.'
+    );
+    return;
+  }
+  currentUser = userInfo;
+
+  // --- User email ---
+  const emailEl = document.getElementById('user-email');
+  emailEl.textContent = userInfo.email;
+  emailEl.classList.remove('hidden');
+
+  // --- Role badge (colour per role) ---
+  const roleClass = 'badge-' + userInfo.role.toLowerCase().replace(/\s+/g, '-');
+  ['role-badge', 'role-badge-mobile'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = userInfo.role;
+    el.className = el.className.replace(/badge-\S+/g, '').trim();
+    el.classList.add('role-badge', roleClass);
+    if (id === 'role-badge-mobile') el.classList.add('role-badge-sm');
+    el.classList.remove('hidden');
+  });
+
+  // --- User avatar (initials) ---
+  const initials = userInfo.email ? userInfo.email[0].toUpperCase() : '?';
+  ['user-avatar', 'user-avatar-mobile'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = initials;
+    el.classList.remove('hidden');
+  });
+
+  // --- Action buttons ---
+  document.getElementById('btn-report').classList.remove('hidden');
+  document.getElementById('btn-create').classList.remove('hidden');
+
+  // --- Stats strip (always visible once loaded) ---
+  document.getElementById('stats-strip').classList.remove('hidden');
+
+  // --- Filter bar for Lead / Main Lead ---
+  if (userInfo.role === 'Lead' || userInfo.role === 'Main Lead') {
+    document.getElementById('filter-bar').classList.remove('hidden');
+  }
+
+  // Load team members for dropdowns
+  google.script.run
+    .withSuccessHandler(onMembersLoaded)
+    .withFailureHandler(onError)
+    .getTeamMembers();
+}
+
+/** Called when getTeamMembers() resolves. */
+function onMembersLoaded(members) {
+  allMembers = members || [];
+  populateAssigneeDropdown('form-assignee');
+  populateAssigneeDropdown('filter-assignee', true);
+
+  // Trainees cannot change assignee – hide that field
+  if (currentUser.role === 'Trainee') {
+    document.getElementById('assignee-field').classList.add('hidden');
+  }
+
+  // Load tasks
+  loadTasks();
+}
+
+/** Fetches tasks from the backend and renders the board. */
+function loadTasks() {
+  showLoading(true);
+  google.script.run
+    .withSuccessHandler(onTasksLoaded)
+    .withFailureHandler(onError)
+    .getTasks();
+}
+
+/** Called when getTasks() resolves. Stores raw data and renders the board. */
+function onTasksLoaded(tasks) {
+  allTasks = (tasks || []).map(normaliseTask);
+  renderBoard(allTasks);
+  showLoading(false);
+}
+
+// ─── TASK NORMALISATION ───────────────────────────────────────────────────────
+
+/**
+ * Converts a raw sheet object to a consistent JS task object.
+ * GAS returns Date objects as strings; normalise them.
+ */
+function normaliseTask(raw) {
+  return {
+    taskId:       String(raw['Task_ID']        || ''),
+    title:        String(raw['Title']          || 'Untitled'),
+    description:  String(raw['Description']    || ''),
+    assignee:     String(raw['Assignee_Email'] || ''),
+    status:       String(raw['Status']         || 'To-Do'),
+    createdDate:  raw['Created_Date'] ? new Date(raw['Created_Date']) : null,
+    dueDate:      raw['Due_Date']     ? new Date(raw['Due_Date'])     : null,
+    parentTaskId: String(raw['Parent_Task_ID'] || '')
+  };
+}
+
+// ─── BOARD RENDERING ──────────────────────────────────────────────────────────
+
+/** Renders task cards into the three Kanban columns. */
+function renderBoard(tasks) {
+  const EMPTY_IDS = {
+    'To-Do':       'col-todo-empty',
+    'In-Progress': 'col-inprogress-empty',
+    'Done':        'col-done-empty'
+  };
+  const cols = {
+    'To-Do':       document.getElementById('col-todo'),
+    'In-Progress': document.getElementById('col-inprogress'),
+    'Done':        document.getElementById('col-done')
+  };
+
+  // Clear existing cards (but keep the empty-state li)
+  Object.entries(cols).forEach(([status, col]) => {
+    Array.from(col.children).forEach(child => {
+      if (child.id !== EMPTY_IDS[status]) col.removeChild(child);
+    });
+  });
+
+  // Separate top-level tasks from sub-tasks
+  const topLevel = tasks.filter(t => !t.parentTaskId);
+
+  topLevel.forEach(task => {
+    const subTasks = tasks.filter(t => t.parentTaskId === task.taskId);
+    const card = buildTaskCard(task, subTasks);
+    if (cols[task.status]) {
+      cols[task.status].appendChild(card);
+    }
+  });
+
+  // Show / hide empty states
+  Object.entries(EMPTY_IDS).forEach(([status, emptyId]) => {
+    const emptyEl = document.getElementById(emptyId);
+    if (!emptyEl) return;
+    const hasCards = topLevel.some(t => t.status === status);
+    emptyEl.style.display = hasCards ? 'none' : '';
+  });
+
+  // Update counters and KPI strip
+  const todoCnt   = topLevel.filter(t => t.status === 'To-Do').length;
+  const inpCnt    = topLevel.filter(t => t.status === 'In-Progress').length;
+  const doneCnt   = topLevel.filter(t => t.status === 'Done').length;
+  document.getElementById('count-todo').textContent       = todoCnt;
+  document.getElementById('count-inprogress').textContent = inpCnt;
+  document.getElementById('count-done').textContent       = doneCnt;
+
+  updateStats(topLevel);
+}
+
+/** Builds and returns an enterprise-styled task card <li> element. */
+function buildTaskCard(task, subTasks) {
+  const li = document.createElement('li');
+  li.dataset.id = task.taskId;
+
+  // Determine card accent class
+  let accentClass = 'card-normal';
+  if (task.status === 'Done') {
+    accentClass = 'task-done';
+  } else if (isOverdue(task)) {
+    accentClass = 'card-overdue';
+  } else if (isDueSoon(task)) {
+    accentClass = 'card-duesoon';
+  }
+  li.className = 'task-card ' + accentClass;
+
+  // --- Due date badge ---
+  let dueDateHtml = '';
+  if (task.dueDate) {
+    const overdue = isOverdue(task);
+    const dueSoon = isDueSoon(task);
+    const dateStr = task.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const dueCls  = overdue  ? 'text-rose-600 font-semibold bg-rose-50 border border-rose-200'
+                  : dueSoon  ? 'text-amber-600 font-semibold bg-amber-50 border border-amber-200'
+                  :            'text-slate-400 bg-slate-50 border border-slate-200';
+    const dueIcon = overdue ? '⚠️' : '📅';
+    dueDateHtml = `<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-md ${dueCls}">
+      ${dueIcon} ${escHtml(dateStr)}${overdue ? ' · Overdue' : ''}
+    </span>`;
+  }
+
+  // --- Sub-task badge ---
+  const subBadge = subTasks.length > 0
+    ? `<span class="inline-flex items-center gap-1 text-xs bg-indigo-50 text-indigo-600 border border-indigo-200 px-1.5 py-0.5 rounded-md font-medium">
+         🔗 ${subTasks.length}
+       </span>`
+    : '';
+
+  // --- Assignee avatar letter ---
+  const avatarLetter = task.assignee ? task.assignee[0].toUpperCase() : '?';
+
+  // --- Delete button (Lead / Main Lead only) ---
+  const deleteBtn = (currentUser && currentUser.role !== 'Trainee')
+    ? `<button onclick="confirmDeleteTask('${escHtml(task.taskId)}')"
+         class="card-btn btn-delete" title="Delete task" aria-label="Delete task">
+         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+             d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+         </svg>
+       </button>`
+    : '';
+
+  li.innerHTML = `
+    <div class="p-3.5">
+      <!-- Title row -->
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex-1 min-w-0 pr-1">
+          <p class="task-title text-slate-800 text-sm font-semibold leading-snug truncate"
+             title="${escHtml(task.title)}">${escHtml(task.title)}</p>
+          ${task.description
+            ? `<p class="text-xs text-slate-400 mt-1 line-clamp-2 leading-relaxed">${escHtml(task.description)}</p>`
+            : ''}
+        </div>
+        <div class="card-actions flex gap-0.5 flex-shrink-0">
+          <button onclick="openEditTaskModal('${escHtml(task.taskId)}')"
+            class="card-btn btn-edit" title="Edit task" aria-label="Edit task">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+            </svg>
+          </button>
+          ${deleteBtn}
+        </div>
+      </div>
+      <!-- Footer row -->
+      <div class="flex items-center justify-between mt-3 gap-2">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <div class="w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 flex items-center
+                      justify-center text-xs font-bold flex-shrink-0" aria-hidden="true">
+            ${avatarLetter}
+          </div>
+          <span class="text-xs text-slate-400 truncate max-w-[130px]"
+                title="${escHtml(task.assignee)}">${escHtml(task.assignee)}</span>
+        </div>
+        <div class="flex items-center gap-1.5 flex-shrink-0">
+          ${subBadge}
+          ${dueDateHtml}
+        </div>
+      </div>
+    </div>`;
+
+  return li;
+}
+
+/** Returns true if the task is past its due date and not Done. */
+function isOverdue(task) {
+  if (!task.dueDate || task.status === 'Done') return false;
+  return task.dueDate < new Date();
+}
+
+/** Returns true if the task is due within the DUE_SOON_HOURS threshold and not Done or overdue. */
+function isDueSoon(task) {
+  if (!task.dueDate || task.status === 'Done' || isOverdue(task)) return false;
+  return task.dueDate < new Date(Date.now() + DUE_SOON_HOURS * 3600 * 1000);
+}
+
+/** Updates the stats KPI strip with current task counts. */
+function updateStats(topLevelTasks) {
+  const total   = topLevelTasks.length;
+  const inpCnt  = topLevelTasks.filter(t => t.status === 'In-Progress').length;
+  const doneCnt = topLevelTasks.filter(t => t.status === 'Done').length;
+  const overdue = topLevelTasks.filter(t => isOverdue(t)).length;
+  setElText('stat-total',      total);
+  setElText('stat-inprogress', inpCnt);
+  setElText('stat-done',       doneCnt);
+  setElText('stat-overdue',    overdue);
+}
+
+// ─── SORTABLEJS DRAG-AND-DROP ─────────────────────────────────────────────────
+
+/** Initialises SortableJS on all Kanban columns after the board is rendered.
+ *  Guarded by _sortableInited so it only runs once regardless of how many
+ *  times loadTasks() / showLoading(false) is called during a session.
+ */
+function initSortable() {
+  if (_sortableInited) return;
+  _sortableInited = true;
+
+  const columns = document.querySelectorAll('.task-list');
+  columns.forEach(col => {
+    Sortable.create(col, {
+      group: 'kanban',          // shared group allows cross-column drag
+      animation: 150,
+      ghostClass: 'sortable-ghost',
+      dragClass: 'sortable-drag',
+      onEnd: onCardDropped
+    });
+  });
+}
+
+/**
+ * Called when a card is dropped into a column.
+ * Updates the card's visual state and persists the new status to the backend.
+ */
+function onCardDropped(evt) {
+  const cardEl    = evt.item;
+  const newStatus = evt.to.dataset.status;   // from data-status attribute
+  const taskId    = cardEl.dataset.id;
+
+  // Update visual class
+  if (newStatus === 'Done') {
+    cardEl.classList.add('task-done');
+  } else {
+    cardEl.classList.remove('task-done');
+  }
+
+  // Update local state
+  const task = allTasks.find(t => t.taskId === taskId);
+  if (task) task.status = newStatus;
+
+  // Update column counters
+  updateColumnCounters();
+
+  // Persist to backend (async, non-blocking)
+  google.script.run
+    .withSuccessHandler(result => {
+      if (!result || !result.success) {
+        showToast('Failed to save status change. Please refresh.', 'error');
+        // Revert UI by re-rendering
+        renderBoard(allTasks);
+      }
+    })
+    .withFailureHandler(() => {
+      showToast('Network error saving status. Please refresh.', 'error');
+      renderBoard(allTasks);
+    })
+    .updateTaskStatus(taskId, newStatus);
+}
+
+/** Recounts and updates the column header badges without a full re-render. */
+function updateColumnCounters() {
+  const counts = { 'To-Do': 0, 'In-Progress': 0, 'Done': 0 };
+  document.querySelectorAll('.task-list').forEach(col => {
+    const status = col.dataset.status;
+    // Count li children that are NOT the empty-state placeholder
+    counts[status] = Array.from(col.children).filter(
+      c => !c.id.endsWith('-empty')
+    ).length;
+  });
+  document.getElementById('count-todo').textContent       = counts['To-Do'];
+  document.getElementById('count-inprogress').textContent = counts['In-Progress'];
+  document.getElementById('count-done').textContent       = counts['Done'];
+  // Keep KPI strip in sync using current allTasks state
+  const topLevel = allTasks.filter(t => !t.parentTaskId);
+  updateStats(topLevel);
+}
+
+// ─── FILTERS ──────────────────────────────────────────────────────────────────
+
+/** Populates an <select> element with team member emails. */
+function populateAssigneeDropdown(selectId, addAllOption) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  // Keep the default first option
+  const first = sel.options[0];
+  sel.innerHTML = '';
+  if (addAllOption && first) sel.appendChild(first);
+
+  allMembers.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m['Email'];
+    opt.textContent = m['Email'];
+    sel.appendChild(opt);
+  });
+}
+
+/** Filters the displayed cards based on the filter-bar selects. */
+function applyFilters() {
+  const assigneeFilter = document.getElementById('filter-assignee').value;
+  const teamFilter     = document.getElementById('filter-team').value;
+
+  let filtered = allTasks;
+
+  if (assigneeFilter) {
+    filtered = filtered.filter(t => t.assignee === assigneeFilter);
+  }
+
+  // Team filter requires cross-referencing member list
+  if (teamFilter) {
+    const teamEmails = allMembers
+      .filter(m => String(m['Team_ID']) === teamFilter)
+      .map(m => m['Email']);
+    filtered = filtered.filter(t => teamEmails.includes(t.assignee));
+  }
+
+  // Show / hide "Clear" button
+  const clearBtn = document.getElementById('btn-clear-filters');
+  if (clearBtn) {
+    if (assigneeFilter || teamFilter) {
+      clearBtn.classList.remove('hidden');
+    } else {
+      clearBtn.classList.add('hidden');
+    }
+  }
+
+  renderBoard(filtered);
+}
+
+/** Resets all active filters. */
+function clearFilters() {
+  const assigneeSel = document.getElementById('filter-assignee');
+  const teamSel     = document.getElementById('filter-team');
+  if (assigneeSel) assigneeSel.value = '';
+  if (teamSel)     teamSel.value     = '';
+  const clearBtn = document.getElementById('btn-clear-filters');
+  if (clearBtn) clearBtn.classList.add('hidden');
+  renderBoard(allTasks);
+}
+
+// ─── CREATE / EDIT TASK MODAL ─────────────────────────────────────────────────
+
+/** Opens the modal in Create mode. */
+function openCreateTaskModal() {
+  document.getElementById('modal-title').textContent       = 'Create Task';
+  document.getElementById('form-submit-btn').textContent   = 'Create Task';
+  document.getElementById('form-mode').value               = 'create';
+  document.getElementById('form-task-id').value            = '';
+  document.getElementById('form-title').value              = '';
+  document.getElementById('form-description').value        = '';
+  document.getElementById('form-due-date').value           = '';
+  document.getElementById('ai-section').classList.remove('hidden');
+  document.getElementById('ai-results').classList.add('hidden');
+  document.getElementById('btn-accept-split').classList.add('hidden');
+  aiSuggestions = [];
+
+  // Enforce assignee visibility based on role every time modal opens
+  const assigneeField = document.getElementById('assignee-field');
+  if (assigneeField) {
+    if (currentUser && currentUser.role === 'Trainee') {
+      assigneeField.classList.add('hidden');
+    } else {
+      assigneeField.classList.remove('hidden');
+    }
+  }
+
+  // Set assignee dropdown to current user
+  const sel = document.getElementById('form-assignee');
+  if (sel && currentUser) {
+    sel.value = currentUser.email;
+  }
+
+  document.getElementById('task-modal').classList.remove('hidden');
+  document.getElementById('form-title').focus();
+}
+
+/** Opens the modal in Edit mode, pre-filled with existing task data. */
+function openEditTaskModal(taskId) {
+  const task = allTasks.find(t => t.taskId === taskId);
+  if (!task) return;
+
+  document.getElementById('modal-title').textContent       = 'Edit Task';
+  document.getElementById('form-submit-btn').textContent   = 'Save Changes';
+  document.getElementById('form-mode').value               = 'edit';
+  document.getElementById('form-task-id').value            = task.taskId;
+  document.getElementById('form-title').value              = task.title;
+  document.getElementById('form-description').value        = task.description;
+  document.getElementById('form-due-date').value           = task.dueDate
+    ? task.dueDate.toISOString().split('T')[0]
+    : '';
+  document.getElementById('ai-section').classList.add('hidden');
+
+  const sel = document.getElementById('form-assignee');
+  if (sel) sel.value = task.assignee;
+
+  document.getElementById('task-modal').classList.remove('hidden');
+}
+
+/** Closes the task modal. */
+function closeTaskModal() {
+  document.getElementById('task-modal').classList.add('hidden');
+}
+
+/** Handles the task form submission (create or edit). */
+function submitTaskForm(event) {
+  event.preventDefault();
+
+  const mode        = document.getElementById('form-mode').value;
+  const taskId      = document.getElementById('form-task-id').value;
+  const title       = document.getElementById('form-title').value.trim();
+  const description = document.getElementById('form-description').value.trim();
+  const assignee    = document.getElementById('form-assignee').value;
+  const dueDate     = document.getElementById('form-due-date').value;
+
+  if (!title) {
+    showToast('Task title is required.', 'warning');
+    return;
+  }
+
+  const btn = document.getElementById('form-submit-btn');
+  btn.disabled    = true;
+  btn.textContent = mode === 'create' ? 'Creating…' : 'Saving…';
+
+  if (mode === 'create') {
+    google.script.run
+      .withSuccessHandler(result => {
+        btn.disabled    = false;
+        btn.textContent = 'Create Task';
+        if (result && result.success) {
+          closeTaskModal();
+          showToast('Task created!', 'success');
+          loadTasks();
+        } else {
+          showToast((result && result.error) || 'Failed to create task.', 'error');
+        }
+      })
+      .withFailureHandler(err => {
+        btn.disabled    = false;
+        btn.textContent = 'Create Task';
+        showToast('Error: ' + (err.message || err), 'error');
+      })
+      .createTask({ title, description, assigneeEmail: assignee, dueDate, parentTaskId: '' });
+
+  } else {
+    google.script.run
+      .withSuccessHandler(result => {
+        btn.disabled    = false;
+        btn.textContent = 'Save Changes';
+        if (result && result.success) {
+          closeTaskModal();
+          showToast('Task updated!', 'success');
+          loadTasks();
+        } else {
+          showToast((result && result.error) || 'Failed to update task.', 'error');
+        }
+      })
+      .withFailureHandler(err => {
+        btn.disabled    = false;
+        btn.textContent = 'Save Changes';
+        showToast('Error: ' + (err.message || err), 'error');
+      })
+      .updateTask({ taskId, title, description, assigneeEmail: assignee, dueDate });
+  }
+}
+
+/** Confirms and deletes a task. */
+function confirmDeleteTask(taskId) {
+  Swal.fire({
+    title: 'Delete task?',
+    text: 'This action cannot be undone.',
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonColor: '#EF4444',
+    confirmButtonText: 'Yes, delete it',
+    cancelButtonText: 'Cancel'
+  }).then(result => {
+    if (result.isConfirmed) {
+      google.script.run
+        .withSuccessHandler(res => {
+          if (res && res.success) {
+            showToast('Task deleted.', 'success');
+            loadTasks();
+          } else {
+            showToast((res && res.error) || 'Delete failed.', 'error');
+          }
+        })
+        .withFailureHandler(onError)
+        .deleteTask(taskId);
+    }
+  });
+}
+
+// ─── GEMINI AI TASK SUGGESTIONS ───────────────────────────────────────────────
+
+/** Calls the backend to get AI sub-task suggestions. */
+function requestAISuggestions() {
+  const title       = document.getElementById('form-title').value.trim();
+  const description = document.getElementById('form-description').value.trim();
+  const dueDate     = document.getElementById('form-due-date').value;
+
+  if (!title) {
+    showToast('Please enter a task title before requesting AI suggestions.', 'warning');
+    return;
+  }
+  if (!dueDate) {
+    showToast('Please set a due date before requesting AI suggestions.', 'warning');
+    return;
+  }
+
+  const btn = document.getElementById('btn-ai-suggest');
+  btn.textContent = '✨ Thinking…';
+  btn.disabled    = true;
+
+  document.getElementById('ai-results').classList.add('hidden');
+  document.getElementById('btn-accept-split').classList.add('hidden');
+
+  google.script.run
+    .withSuccessHandler(result => {
+      btn.textContent = 'Suggest Sub-tasks';
+      btn.disabled    = false;
+      if (result && result.success) {
+        aiSuggestions = result.subtasks || [];
+        renderAISuggestions(aiSuggestions);
+      } else {
+        showToast((result && result.error) || 'AI request failed.', 'error');
+      }
+    })
+    .withFailureHandler(err => {
+      btn.textContent = 'Suggest Sub-tasks';
+      btn.disabled    = false;
+      showToast('AI error: ' + (err.message || err), 'error');
+    })
+    .getAITaskSuggestions(title, description, dueDate);
+}
+
+/** Renders AI sub-task suggestions in the modal. */
+function renderAISuggestions(subtasks) {
+  const container = document.getElementById('ai-results');
+  container.innerHTML = '';
+
+  subtasks.forEach((sub, idx) => {
+    const div = document.createElement('div');
+    div.className = 'bg-white border border-indigo-200 rounded-lg p-3 text-xs';
+    div.innerHTML = `
+      <div class="flex items-start gap-2">
+        <span class="text-indigo-400 font-bold mt-0.5">${idx + 1}.</span>
+        <div>
+          <p class="font-semibold text-slate-700">${escHtml(sub.title)}</p>
+          <p class="text-slate-500 mt-0.5">${escHtml(sub.description || '')}</p>
+          <p class="text-indigo-500 mt-1">📅 Deadline: ${escHtml(sub.deadline || 'N/A')}</p>
+        </div>
+      </div>`;
+    container.appendChild(div);
+  });
+
+  container.classList.remove('hidden');
+  document.getElementById('btn-accept-split').classList.remove('hidden');
+}
+
+/** Creates the parent task first, then creates all AI sub-tasks. */
+function acceptAndSplit() {
+  if (aiSuggestions.length === 0) return;
+
+  const title       = document.getElementById('form-title').value.trim();
+  const description = document.getElementById('form-description').value.trim();
+  const assignee    = document.getElementById('form-assignee').value || (currentUser && currentUser.email);
+  const dueDate     = document.getElementById('form-due-date').value;
+
+  const btn = document.getElementById('btn-accept-split');
+  btn.disabled    = true;
+  btn.textContent = 'Creating…';
+
+  // Step 1: create the parent task
+  google.script.run
+    .withSuccessHandler(result => {
+      if (!result || !result.success) {
+        btn.disabled    = false;
+        btn.textContent = '✅ Accept & Split into Sub-tasks';
+        showToast((result && result.error) || 'Failed to create parent task.', 'error');
+        return;
+      }
+
+      const parentId = result.taskId;
+
+      // Step 2: create all sub-tasks
+      google.script.run
+        .withSuccessHandler(subResult => {
+          btn.disabled    = false;
+          btn.textContent = '✅ Accept & Split into Sub-tasks';
+          closeTaskModal();
+          showToast(
+            `Task split into ${subResult.created} sub-task(s)!`,
+            'success'
+          );
+          loadTasks();
+        })
+        .withFailureHandler(err => {
+          btn.disabled    = false;
+          btn.textContent = '✅ Accept & Split into Sub-tasks';
+          showToast('Sub-tasks creation failed: ' + (err.message || err), 'error');
+          loadTasks(); // still reload to show the parent
+        })
+        .createSubtasksFromAI(parentId, assignee, aiSuggestions);
+    })
+    .withFailureHandler(err => {
+      btn.disabled    = false;
+      btn.textContent = '✅ Accept & Split into Sub-tasks';
+      showToast('Error: ' + (err.message || err), 'error');
+    })
+    .createTask({ title, description, assigneeEmail: assignee, dueDate, parentTaskId: '' });
+}
+
+// ─── REPORT MODAL ─────────────────────────────────────────────────────────────
+
+/** Opens the report modal and loads data. */
+function openReportModal() {
+  document.getElementById('report-modal').classList.remove('hidden');
+  document.getElementById('report-loading').classList.remove('hidden');
+  document.getElementById('report-content').classList.add('hidden');
+
+  // Destroy existing chart instance to avoid canvas re-use errors
+  if (reportChart) {
+    reportChart.destroy();
+    reportChart = null;
+  }
+
+  google.script.run
+    .withSuccessHandler(renderReport)
+    .withFailureHandler(err => {
+      document.getElementById('report-loading').classList.add('hidden');
+      showToast('Failed to load report: ' + (err.message || err), 'error');
+    })
+    .getWeeklyReport();
+}
+
+/** Closes the report modal. */
+function closeReportModal() {
+  document.getElementById('report-modal').classList.add('hidden');
+}
+
+/** Renders the report data into the modal. */
+function renderReport(data) {
+  document.getElementById('report-loading').classList.add('hidden');
+  document.getElementById('report-content').classList.remove('hidden');
+  document.getElementById('report-week-range').textContent = data.weekRange || '';
+
+  // Inline stat pills
+  const cd = data.chartData || {};
+  setElText('rstat-done',       cd.done       || 0);
+  setElText('rstat-inprogress', cd.inProgress || 0);
+  setElText('rstat-todo',       cd.todo       || 0);
+  setElText('rstat-total',      cd.total      || (cd.done || 0) + (cd.inProgress || 0) + (cd.todo || 0));
+
+  // Build summary table
+  const tbody = document.getElementById('report-table-body');
+  tbody.innerHTML = '';
+  (data.summary || []).forEach((row, i) => {
+    const tr = document.createElement('tr');
+    tr.className = i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
+    tr.innerHTML = `
+      <td class="text-slate-700 text-sm font-medium">${escHtml(row.email)}</td>
+      <td class="text-center text-emerald-600 font-semibold">${row.done}</td>
+      <td class="text-center text-amber-600 font-semibold">${row.inProgress}</td>
+      <td class="text-center text-slate-500">${row.todo}</td>
+      <td class="text-center text-slate-700 font-bold">${row.total}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  // Chart.js doughnut chart
+  const ctx = document.getElementById('report-chart').getContext('2d');
+  reportChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Done', 'In Progress', 'To-Do'],
+      datasets: [{
+        data: [cd.done || 0, cd.inProgress || 0, cd.todo || 0],
+        backgroundColor: ['#10B981', '#F59E0B', '#CBD5E1'],
+        borderWidth: 3,
+        borderColor: '#ffffff',
+        hoverOffset: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false }
+      },
+      cutout: '68%'
+    }
+  });
+}
+
+/** Triggers PDF export via backend and auto-downloads the file. */
+function exportReportPDF() {
+  Swal.fire({
+    title: 'Generating PDF…',
+    text: 'Please wait while we create your report.',
+    allowOutsideClick: false,
+    didOpen: () => { Swal.showLoading(); }
+  });
+
+  google.script.run
+    .withSuccessHandler(result => {
+      Swal.close();
+      if (result && result.success) {
+        // Decode base64 and trigger download in the browser
+        const binaryString = atob(result.base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = result.filename || 'report.pdf';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('PDF downloaded!', 'success');
+      } else {
+        showToast((result && result.error) || 'PDF generation failed.', 'error');
+      }
+    })
+    .withFailureHandler(err => {
+      Swal.close();
+      showToast('PDF error: ' + (err.message || err), 'error');
+    })
+    .generateReportPDF();
+}
+
+// ─── UI UTILITIES ─────────────────────────────────────────────────────────────
+
+/** Shows or hides the full-page loading overlay. */
+function showLoading(visible) {
+  const el = document.getElementById('loading-overlay');
+  if (visible) {
+    el.classList.remove('hidden');
+  } else {
+    el.classList.add('hidden');
+    // Initialise SortableJS after first render
+    initSortable();
+  }
+}
+
+/** Shows a short toast notification using SweetAlert2. */
+function showToast(message, icon) {
+  const Toast = Swal.mixin({
+    toast: true,
+    position: 'bottom-end',
+    showConfirmButton: false,
+    timer: 3500,
+    timerProgressBar: true
+  });
+  Toast.fire({ icon: icon || 'info', title: message });
+}
+
+/** Shows a fatal error (used when user is not in the system). */
+function showFatalError(message) {
+  showLoading(false);
+  Swal.fire({ icon: 'error', title: 'Access Denied', text: message });
+}
+
+/** Generic error handler for google.script.run failures. */
+function onError(err) {
+  showLoading(false);
+  showToast('An error occurred: ' + (err.message || err), 'error');
+}
+
+/** Escapes HTML entities to prevent XSS in dynamic content. */
+function escHtml(str) {
+  const div = document.createElement('div');
+  div.appendChild(document.createTextNode(String(str)));
+  return div.innerHTML;
+}
+
+// ─── BOOTSTRAP ───────────────────────────────────────────────────────────────
+
+// Start the app once the DOM is ready
+document.addEventListener('DOMContentLoaded', init);
+</script>
